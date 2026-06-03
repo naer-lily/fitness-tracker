@@ -30,7 +30,7 @@ agent_created: true
   - `critical_kg` — 默认 2.0
   - `last_milestone_weight` — 初始化为当前体重
   - `tdee` — 日均总消耗（kcal），来自访谈或用户自行设置
-  - `default_meals` — 四餐缺省热量：`{"breakfast":450,"lunch":650,"dinner":600,"snack":200}`
+  - `default_meals` — 三餐缺省热量：`{"breakfast":450,"lunch":650,"dinner":600,"snack":0}`（零食无缺省值，没记就是 0）
   - `goal_deficit` — 每日目标热量缺口（默认 500 kcal）
 
 详细的 profile.md 格式和 tracker.json schema 见 `references/profile-schema.md`。分阶段划分方法论见 `references/planning-guide.md`（按需加载）。
@@ -70,9 +70,9 @@ agent_created: true
 - 修改：`nutrition.py defaults --set breakfast=500 lunch=700`
 
 ### 缺省值机制
-- 用户未记录的餐次，在计算热量时会用 `tracker.json` 中 `default_meals` 的值自动填充
+- 三餐（早/午/晚）未记录时，用 `tracker.json` 中 `default_meals` 的值自动填充
+- **零食不设缺省值**：没记零食就是 0 kcal（零食可有可无，不能假定每天都吃）
 - 填充的值在 summary 输出中标记为 `auto_filled: true`
-- 回顾客可以据此判断当日的缺口是真实的还是"大概的"
 
 ## 3. 运动记录
 

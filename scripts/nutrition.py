@@ -133,10 +133,14 @@ def cmd_summary(args):
                 f = sum(e['fat'] for e in entries)
                 filled = False
                 count = len(entries)
+            elif meal_type == 'snack':
+                cal = pro = carb = f = 0
+                filled = False
+                count = 0
             else:
                 default_cal = defaults.get(meal_type, 0)
                 cal = default_cal
-                pro = carb = f = 0  # defaults only have calories
+                pro = carb = f = 0
                 filled = True
                 count = 0
 

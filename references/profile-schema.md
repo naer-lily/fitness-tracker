@@ -62,7 +62,7 @@
     "breakfast": 450,
     "lunch": 650,
     "dinner": 600,
-    "snack": 200
+    "snack": 0
   },
   "goal_deficit": 500
 }
@@ -88,7 +88,7 @@
 | `last_milestone_weight` | number | 上次触发里程碑时的体重 |
 | `milestones_hit` | array | 已达成的里程碑历史 |
 | `tdee` | number | 日均总消耗 (kcal)，初始化时访谈收集 |
-| `default_meals` | object | 四餐缺省热量值，未记餐次自动填充 |
+| `default_meals` | object | 三餐缺省热量值，未记餐次自动填充；零食无缺省值，没记就是 0 |
 | `goal_deficit` | number | 每日目标热量缺口 (kcal)，默认 500 |
 
 ---

@@ -222,11 +222,13 @@ def compute_calorie_summary(tracker, days=7):
         day_nut = nut_by_date.get(ds, {})
 
         intake = 0
-        for meal in ['breakfast', 'lunch', 'dinner', 'snack']:
+        for meal in ['breakfast', 'lunch', 'dinner']:
             if meal in day_nut:
                 intake += day_nut[meal]
             else:
                 intake += default_meals.get(meal, 0)
+        if 'snack' in day_nut:
+            intake += day_nut['snack']
 
         burn = ex_by_date.get(ds, 0)
         deficit = tdee + burn - intake

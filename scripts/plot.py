@@ -145,7 +145,7 @@ def compute_daily_calories(weight_records, min_date, max_date, default_meals, td
         breakfast_cal = day_nut.get('breakfast', default_meals.get('breakfast', 0))
         lunch_cal = day_nut.get('lunch', default_meals.get('lunch', 0))
         dinner_cal = day_nut.get('dinner', default_meals.get('dinner', 0))
-        snack_cal = day_nut.get('snack', default_meals.get('snack', 0))
+        snack_cal = day_nut.get('snack', 0)
 
         total_intake = breakfast_cal + lunch_cal + dinner_cal + snack_cal
         exercise_burn = ex_by_date.get(ds, 0)
