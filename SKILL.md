@@ -13,8 +13,10 @@ agent_created: true
 1. **称呼**：怎么称呼你？
 2. **当前数据**：当前体重？体脂率、肌肉量（可选）
 3. **目标与时间**：目标体重？期望何时达成？
-4. **约束**：每周可运动的时间段与类型、可用设施、饮食偏好/禁忌、健康注意事项
-5. **历史经验**：之前减重有效的方法？失败/反弹的经历和触发因素？（一两句话即可）
+4. **能量**：知道自己的日均总消耗（TDEE）吗？（不知道的话，可根据基础代谢 + 活动系数估算）
+5. **约束**：每周可运动的时间段与类型、可用设施、饮食偏好/禁忌、健康注意事项
+6. **饮食节奏**：三餐大致摄入量？每天有没有零食习惯？（有了这些数值，可以设定热量缺省值）
+7. **历史经验**：之前减重有效的方法？失败/反弹的经历和触发因素？（一两句话即可）
 
 收集完毕后向用户口头总结确认，然后创建以下文件：
 
@@ -27,6 +29,9 @@ agent_created: true
   - `warning_kg` — 默认 1.0
   - `critical_kg` — 默认 2.0
   - `last_milestone_weight` — 初始化为当前体重
+  - `tdee` — 日均总消耗（kcal），来自访谈或用户自行设置
+  - `default_meals` — 四餐缺省热量：`{"breakfast":450,"lunch":650,"dinner":600,"snack":200}`
+  - `goal_deficit` — 每日目标热量缺口（默认 500 kcal）
 
 详细的 profile.md 格式和 tracker.json schema 见 `references/profile-schema.md`。分阶段划分方法论见 `references/planning-guide.md`（按需加载）。
 
@@ -47,21 +52,59 @@ agent_created: true
 ### 滞录检测
 如果 `review.py` 输出的 `days_since_record` 超过 3 天，在对话中提一句（如"有几天没记录了，今天方便测一下吗？"），不反复催促。
 
-## 2. 定期回顾
+## 2. 饮食记录
+
+当用户告知当日吃了什么、或者报出某餐的热量数据时：
+
+### 记录一餐
+调用 `scripts/nutrition.py add <餐次> <热量> [--protein N] [--carbs N] [--fat N] [--note "..."]`。
+
+餐次可选：`breakfast` / `lunch` / `dinner` / `snack`。零食可以记录多条。
+
+```
+例: nutrition.py add lunch 650 --protein 35 --carbs 70 --fat 20 --note "鸡胸+米饭"
+```
+
+### 查看与修改缺省值
+- 查看：`nutrition.py defaults`
+- 修改：`nutrition.py defaults --set breakfast=500 lunch=700`
+
+### 缺省值机制
+- 用户未记录的餐次，在计算热量时会用 `tracker.json` 中 `default_meals` 的值自动填充
+- 填充的值在 summary 输出中标记为 `auto_filled: true`
+- 回顾客可以据此判断当日的缺口是真实的还是"大概的"
+
+## 3. 运动记录
+
+用户用手环/手表记录的运动热量，直接录入：
+
+```
+例: exercise.py add 跑步 280 --duration 30
+例: exercise.py add 力量训练 200 --duration 45
+```
+
+### 查看摘要
+`exercise.py summary [--days 7]` — 输出近 N 天的运动概览 JSON。
+
+## 4. 定期回顾
 
 ### 触发条件
 每次会话开始时，调用 `scripts/review.py`。若返回 `review_due: true`，主动告知用户"该做周回顾了"，询问是否现在做。
 
 ### 回顾流程
-1. **绘图**：调用 `scripts/plot.py`，脚本在临时目录下生成 5 张独立 PNG（trend_weight / trend_bodyfat / trend_weight_lbm / trend_weekly_loss / trend_raw_weight），stdout 输出 JSON 含文件路径列表
-2. **发送图片**：逐张读取并发送给用户——按体重趋势 → 体脂率 → 体重vs去脂体重 → 周减重速度 → 原始体重的顺序，每张图附一句话说明当前状态
-3. **结构化分析**：基于图表和 `review.py` 的输出，组织以下要点（用自己的语言，不套模板）：
+1. **绘图**：调用 `scripts/plot.py`，在临时目录下生成交互式 `dashboard.html`，stdout 输出 JSON 含文件路径
+2. **展示图表**：用 `open_open` 在浏览器打开 HTML 仪表盘（内含 5 个子图：体重趋势、体脂率、周减重速度、热量摄入堆叠柱状图、热量缺口柱状图），用户可悬停查看数值、缩放平移
+3. **结构化分析**：基于仪表盘和 `review.py` 的输出，组织以下要点（用自己的语言，不套模板）：
 
 #### 分析要点
 - **趋势方向**：7 日均线是向下/走平/向上？对比上次回顾的变化
 - **速度是否安全**：每周减重是否落在 0.5-1.0 kg 区间？过快（>1.5）注意肌肉流失，过慢（<0.3）可能是平台期
 - **去脂体重**：升/稳/降？若持续下降，提示蛋白质摄入和力量训练
 - **与计划对比**：当前体重 vs 该阶段预期体重，超前/正常/滞后
+- **🔥 热量缺口**：近 7 日平均缺口是否达到目标（`goal_deficit`）？
+  - 若几乎没有缺口（<100 kcal/天）→ 温和询问饮食是否有特殊情况
+  - 若缺口持续偏大（>1000 kcal/天）→ 提示注意肌肉流失和代谢适应
+  - 热量摄入使用缺省值填充时，提醒"本周有部分天数使用了估算值"
 
 #### 偏差应对
 根据 `review.py` 输出的 `deviation.level`：
@@ -77,7 +120,7 @@ agent_created: true
 - 聚焦当前阶段，不把后面阶段的压力提前
 - 用图表说话：让趋势图承载数据，口头评论只做解读
 
-## 3. 执行支持（核心）
+## 5. 执行支持（核心）
 
 此部分是减重成功的关键——定计划不难，执行到底才是难点。以下给出判断框架和行动原则，具体的表达方式、时机选择、语气调整由 AI 根据对话上下文自行判断。
 
@@ -114,7 +157,7 @@ agent_created: true
 
 调整时给出 2-3 个具体选项让用户选择，不要替用户做决定。确认后同步更新 `profile.md` 和 `tracker.json`。
 
-## 4. 里程碑
+## 6. 里程碑
 
 `review.py` 自动检测里程碑（每 `milestone_interval_kg` 触发一次）。若输出中包含 `milestone` 字段，向用户指出这一成就。
 
@@ -122,24 +165,28 @@ agent_created: true
 
 每完成一个阶段目标时额外庆祝——此时不仅是数字变化，更是"在新的生活条件下找到了可执行的方法"。
 
-## 5. 脚本速查
+## 7. 脚本速查
 
 | 脚本 | 调用方式 | 副作用 |
 |------|---------|--------|
 | `scripts/record.py` | `<体重kg> <体脂率%> [肌肉量kg]` | 追加 CSV，更新 tracker 的 last_record |
-| `scripts/plot.py` | 无参数 | 在临时目录生成 5 张独立 PNG，stdout 输出 JSON 含文件路径列表 |
+| `scripts/nutrition.py` | `add <餐次> <热量> [--protein N] [--carbs N] [--fat N] [--note ...]`<br>`summary [--days N]`<br>`defaults [--set key=val]` | 追加 CSV；查看/修改缺省值写入 tracker |
+| `scripts/exercise.py` | `add <类型> <消耗kcal> [--duration N] [--note ...]`<br>`summary [--days N]` | 追加 CSV |
+| `scripts/plot.py` | 无参数 | 生成 `dashboard.html` 和 `dashboard.png`，stdout 输出 JSON |
 | `scripts/review.py` | 无参数 或 `--mark-done` | 无文件修改（除非带 --mark-done）；输出 JSON 到 stdout |
 
 所有脚本自动定位 `data/` 目录（相对于 SKILL 根目录）。不需要在调用时指定路径。
 
-## 6. 文件结构
+## 8. 文件结构
 
 ```
 fitness-tracker/
 ├── SKILL.md                        # 本文件
 ├── scripts/
-│   ├── record.py                   # 记录数据
-│   ├── plot.py                     # 生成趋势图（5张独立PNG → 临时目录）
+│   ├── record.py                   # 体重/体脂记录
+│   ├── nutrition.py                # 饮食记录
+│   ├── exercise.py                 # 运动记录
+│   ├── plot.py                     # 生成交互式仪表盘 HTML → 临时目录
 │   └── review.py                   # 回顾检查
 ├── references/
 │   ├── profile-schema.md           # 数据格式 schema
@@ -147,5 +194,7 @@ fitness-tracker/
 └── data/                           # 用户数据（运行时生成）
     ├── profile.md                  # 用户画像（Markdown）
     ├── tracker.json               # 结构化参数（JSON）
-    └── records.csv                # 时序记录
+    ├── records.csv                # 体重时序记录
+    ├── nutrition_log.csv          # 饮食记录
+    └── exercise_log.csv           # 运动记录
 ```

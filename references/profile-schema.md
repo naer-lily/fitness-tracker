@@ -47,13 +47,24 @@
       "target_weight": 71.0,
       "target_bodyfat": null,
       "start": "2026-05-27",
-      "end": "2026-06-30"
+      "end": "2026-06-30",
+      "start_weight": 74.0
     }
   ],
   "milestone_interval_kg": 2.0,
   "review_cadence_days": 7,
   "warning_kg": 1.0,
-  "critical_kg": 2.0
+  "critical_kg": 2.0,
+  "last_milestone_weight": 74.0,
+  "milestones_hit": [],
+  "tdee": 2200,
+  "default_meals": {
+    "breakfast": 450,
+    "lunch": 650,
+    "dinner": 600,
+    "snack": 200
+  },
+  "goal_deficit": 500
 }
 ```
 
@@ -69,10 +80,16 @@
 | `phases[].target_bodyfat` | number\|null | 该阶段的目标体脂率 (%)，可为 null |
 | `phases[].start` | date string | 阶段开始日期 |
 | `phases[].end` | date string | 阶段结束日期 |
-| `milestone_interval_kg` | number | 每减多少 kg 触发一次里程碑庆祝。初始化时根据总目标自动建议 |
+| `phases[].start_weight` | number | 该阶段起始体重 |
+| `milestone_interval_kg` | number | 每减多少 kg 触发一次里程碑庆祝 |
 | `review_cadence_days` | number | 两次回顾之间的天数，默认 7 |
-| `warning_kg` | number | 黄灯偏差阈值 (kg)，超过计划目标此值触发警告 |
-| `critical_kg` | number | 红灯偏差阈值 (kg)，超过此值触发严重警告 |
+| `warning_kg` | number | 黄灯偏差阈值 (kg) |
+| `critical_kg` | number | 红灯偏差阈值 (kg) |
+| `last_milestone_weight` | number | 上次触发里程碑时的体重 |
+| `milestones_hit` | array | 已达成的里程碑历史 |
+| `tdee` | number | 日均总消耗 (kcal)，初始化时访谈收集 |
+| `default_meals` | object | 四餐缺省热量值，未记餐次自动填充 |
+| `goal_deficit` | number | 每日目标热量缺口 (kcal)，默认 500 |
 
 ---
 
@@ -91,3 +108,39 @@
 - **去脂体重kg**：由 `record.py` 或 `plot.py` 自动计算（体重 × (1 - 体脂率/100)），也可预填
 
 `plot.py` 读取此文件时，去脂体重列为空则自动补算。
+
+---
+
+## data/nutrition_log.csv（CSV，饮食记录）
+
+```
+日期,餐次,热量kcal,蛋白质g,碳水g,脂肪g,备注
+2026-06-01,breakfast,450,20,55,15,
+2026-06-01,lunch,650,35,70,20,
+2026-06-01,dinner,600,30,60,18,
+2026-06-01,snack,200,5,30,8,下午奶茶
+2026-06-01,snack,150,3,25,5,坚果
+```
+
+- **日期**：YYYY-MM-DD
+- **餐次**：`breakfast` / `lunch` / `dinner` / `snack`
+- **热量kcal**：必填
+- 蛋白质/碳水/脂肪：选填
+- 零食可有多条记录（0 条到 N 条）
+- 未记录的餐次，计算时用 `tracker.json` 中 `default_meals` 的值填充
+
+---
+
+## data/exercise_log.csv（CSV，运动记录）
+
+```
+日期,运动类型,时长分钟,消耗kcal,备注
+2026-06-01,跑步,30,280,
+2026-06-01,力量训练,45,200,
+```
+
+- **日期**：YYYY-MM-DD
+- **运动类型**：自由文本
+- **时长分钟**：可选
+- **消耗kcal**：必填（用户手环/手表数据）
+- 一天可有多条记录

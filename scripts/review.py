@@ -14,6 +14,7 @@ import sys
 import json
 import csv
 from datetime import date, timedelta
+from collections import defaultdict
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SKILL_ROOT = os.path.dirname(SCRIPT_DIR)
@@ -153,6 +154,133 @@ def check_milestone(current_weight, tracker):
     return None
 
 
+def load_nutrition():
+    NUTRITION_PATH = os.path.join(DATA_DIR, 'nutrition_log.csv')
+    if not os.path.exists(NUTRITION_PATH):
+        return []
+    records = []
+    with open(NUTRITION_PATH, 'r', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        next(reader, None)
+        for row in reader:
+            if len(row) < 3:
+                continue
+            records.append({
+                'date': row[0].strip(),
+                'meal': row[1].strip(),
+                'calories': float(row[2]),
+            })
+    return records
+
+
+def load_exercise():
+    EXERCISE_PATH = os.path.join(DATA_DIR, 'exercise_log.csv')
+    if not os.path.exists(EXERCISE_PATH):
+        return []
+    records = []
+    with open(EXERCISE_PATH, 'r', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        next(reader, None)
+        for row in reader:
+            if len(row) < 3:
+                continue
+            records.append({
+                'date': row[0].strip(),
+                'calories': float(row[3]) if len(row) > 3 and row[3].strip() else 0,
+            })
+    return records
+
+
+def compute_calorie_summary(tracker, days=7):
+    today = date.today()
+    start = today - timedelta(days=days - 1)
+
+    tdee = tracker.get('tdee', 2200)
+    default_meals = tracker.get('default_meals', {
+        'breakfast': 450, 'lunch': 650, 'dinner': 600, 'snack': 200,
+    })
+    goal_deficit = tracker.get('goal_deficit', 500)
+
+    nutrition = load_nutrition()
+    exercise = load_exercise()
+
+    nut_by_date = defaultdict(lambda: defaultdict(float))
+    for r in nutrition:
+        nut_by_date[r['date']][r['meal']] += r['calories']
+
+    ex_by_date = defaultdict(float)
+    for r in exercise:
+        ex_by_date[r['date']] += r['calories']
+
+    daily_intakes = []
+    daily_burns = []
+    daily_deficits = []
+    deficit_met = 0
+
+    for i in range(days):
+        ds = (start + timedelta(days=i)).isoformat()
+        day_nut = nut_by_date.get(ds, {})
+
+        intake = 0
+        for meal in ['breakfast', 'lunch', 'dinner', 'snack']:
+            if meal in day_nut:
+                intake += day_nut[meal]
+            else:
+                intake += default_meals.get(meal, 0)
+
+        burn = ex_by_date.get(ds, 0)
+        deficit = tdee + burn - intake
+
+        daily_intakes.append(intake)
+        daily_burns.append(burn)
+        daily_deficits.append(deficit)
+        if deficit >= goal_deficit:
+            deficit_met += 1
+
+    avg_intake = round(sum(daily_intakes) / days) if days > 0 else 0
+    avg_burn = round(sum(daily_burns) / days) if days > 0 else 0
+    avg_deficit = round(sum(daily_deficits) / days) if days > 0 else 0
+
+    return {
+        'days': days,
+        'avg_daily_intake': avg_intake,
+        'avg_daily_exercise_burn': avg_burn,
+        'avg_deficit': avg_deficit,
+        'goal_deficit': goal_deficit,
+        'deficit_met_days': deficit_met,
+        'tdee': tdee,
+    }
+
+
+def compute_exercise_summary(days=7):
+    today = date.today()
+    start = today - timedelta(days=days - 1)
+
+    exercise = load_exercise()
+    by_date = defaultdict(list)
+    for r in exercise:
+        by_date[r['date']].append(r)
+
+    total_cal = 0
+    days_with_exercise = 0
+
+    for i in range(days):
+        ds = (start + timedelta(days=i)).isoformat()
+        entries = by_date.get(ds, [])
+        if entries:
+            days_with_exercise += 1
+        total_cal += sum(e['calories'] for e in entries)
+
+    avg_per_session = round(total_cal / max(1, sum(len(by_date[d]) for d in by_date)), 1) if exercise else 0
+
+    return {
+        'days': days,
+        'days_with_exercise': days_with_exercise,
+        'total_calories': round(total_cal),
+        'avg_per_session': avg_per_session,
+    }
+
+
 def main():
     today = date.today()
     mark_done = '--mark-done' in sys.argv
@@ -231,7 +359,9 @@ def main():
         'phase_progress_pct': phase_progress,
         'milestone': milestone,
         'records_count': len(records),
-        'records_total': len(load_records())
+        'records_total': len(load_records()),
+        'calorie_summary': compute_calorie_summary(tracker),
+        'exercise_summary': compute_exercise_summary(),
     }
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
