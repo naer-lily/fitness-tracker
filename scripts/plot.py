@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate interactive fitness dashboard HTML with Plotly.
+"""Generate fitness dashboard PNG with matplotlib.
 
 Charts:
   1. Weight trend (7-day MA + phase target lines)
@@ -8,7 +8,7 @@ Charts:
   4. Daily calorie intake (stacked bar by meal type)
   5. Daily calorie deficit (bar chart vs goal)
 
-Output: single HTML file saved to TEMP/opencode/fitness-tracker/dashboard.html
+Output: PNG file saved to TEMP/opencode/fitness-tracker/dashboard.png
 """
 
 import os
@@ -17,6 +17,13 @@ import json
 import csv
 from datetime import date, timedelta
 from collections import defaultdict
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import matplotlib.ticker as mticker
+import numpy as np
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SKILL_ROOT = os.path.dirname(SCRIPT_DIR)
@@ -34,6 +41,80 @@ TEMP_DIR = os.path.join(
 MEAL_LABELS = {'breakfast': '早餐', 'lunch': '午餐', 'dinner': '晚餐', 'snack': '零食'}
 MEAL_ORDER = ['breakfast', 'lunch', 'dinner', 'snack']
 MEAL_COLORS = {'breakfast': '#FF9F43', 'lunch': '#EE5A24', 'dinner': '#0ABDE3', 'snack': '#10AC84'}
+
+# ---------------------------------------------------------------------------
+# Font — cross-platform: system font first, then bundled fallback
+# ---------------------------------------------------------------------------
+
+_FONT_DIR = os.path.join(SKILL_ROOT, 'fonts')          # bundled fonts directory
+
+def _register_chinese_font():
+    """Find a Chinese-capable font, register it with matplotlib, and set
+    rcParams so all text renders Chinese correctly.
+
+    Priority:
+      1. System fonts by name (works on most platforms without paths)
+      2. Bundled font in SKILL_ROOT/fonts/ (portable fallback)
+    """
+    # ---- System fonts by font-family name (cross-platform) ----
+    SYSTEM_CANDIDATES = [
+        # Windows
+        'Microsoft YaHei',
+        'SimHei',
+        # macOS
+        'PingFang SC',
+        'Heiti SC',
+        'STHeiti',
+        'Hiragino Sans GB',
+        # Linux
+        'Noto Sans CJK SC',
+        'Noto Sans SC',
+        'WenQuanYi Micro Hei',
+        'WenQuanYi Zen Hei',
+        'Source Han Sans SC',
+    ]
+    for name in SYSTEM_CANDIDATES:
+        try:
+            # Check if matplotlib already knows this font
+            from matplotlib.font_manager import fontManager
+            if any(f.name == name for f in fontManager.ttflist):
+                plt.rcParams['font.sans-serif'] = [name, 'DejaVu Sans']
+                plt.rcParams['font.family'] = 'sans-serif'
+                return
+        except Exception:
+            continue
+
+    # ---- Bundled font files (relative path, cross-platform) ----
+    BUNDLED_FONTS = [
+        'NotoSansSC-Regular.ttf',
+        'NotoSansSC-Regular.otf',
+        'SourceHanSansSC-Regular.otf',
+    ]
+    for fname in BUNDLED_FONTS:
+        fp = os.path.join(_FONT_DIR, fname)
+        if os.path.exists(fp):
+            try:
+                from matplotlib.font_manager import fontManager
+                fontManager.addfont(fp)
+                # Re-read the registered name from the just-added font
+                for f in fontManager.ttflist:
+                    if os.path.samefile(f.fname, fp) if hasattr(os.path, 'samefile') else False:
+                        plt.rcParams['font.sans-serif'] = [f.name, 'DejaVu Sans']
+                        plt.rcParams['font.family'] = 'sans-serif'
+                        return
+                # Fallback: just set DejaVu Sans (no Chinese)
+                plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+                plt.rcParams['font.family'] = 'sans-serif'
+                return
+            except Exception:
+                continue
+
+    # Nothing found — warn but don't crash
+    import warnings
+    warnings.warn('No Chinese font found. Install one or place a .ttf in fonts/')
+
+_register_chinese_font()
+plt.rcParams['axes.unicode_minus'] = False
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -121,7 +202,6 @@ def rolling_average(pairs, window=7):
 
 
 def compute_daily_calories(weight_records, min_date, max_date, default_meals, tdee):
-    """Build day-level calorie data across the full date span."""
     nutrition = load_nutrition()
     exercise = load_exercise()
 
@@ -149,7 +229,7 @@ def compute_daily_calories(weight_records, min_date, max_date, default_meals, td
 
         total_intake = breakfast_cal + lunch_cal + dinner_cal + snack_cal
         exercise_burn = ex_by_date.get(ds, 0)
-        deficit = float(tdee or 0) + float(exercise_burn or 0) - float(total_intake or 0)  # type: ignore[operator]
+        deficit = float(tdee or 0) + float(exercise_burn or 0) - float(total_intake or 0)
 
         daily.append({
             'date': d,
@@ -168,294 +248,230 @@ def compute_daily_calories(weight_records, min_date, max_date, default_meals, td
 
 
 # ---------------------------------------------------------------------------
-# Plotly chart builders
+# Chart drawing
 # ---------------------------------------------------------------------------
 
-def make_dashboard(weight_records, tracker, calorie_daily, has_nutrition, has_exercise, goal_deficit):
-    from plotly.subplots import make_subplots
-    import plotly.graph_objects as go
+def draw_weight_trend(ax, weight_records, tracker):
+    """Row 1: Weight trend with 7-day MA and phase target lines."""
+    if not weight_records:
+        ax.text(0.5, 0.5, '暂无体重数据', transform=ax.transAxes, ha='center', va='center',
+                fontsize=14, color='gray')
+        ax.set_title('体重变化趋势 (7日滑动平均)', fontsize=13, fontweight='bold', color='#2D3436')
+        return
 
-    has_weight = len(weight_records) > 0
+    w_pairs = [(r['date'], r['weight']) for r in weight_records]
+    dates_ma, w_ma = rolling_average(w_pairs)
+
+    ax.plot(dates_ma, w_ma, color='#0984E3', linewidth=2.5, marker='o', markersize=4,
+            label='体重 (7日均线)', zorder=3)
+    ax.fill_between(dates_ma, w_ma, alpha=0.08, color='#0984E3')
+
+    # Phase target lines
+    if tracker.get('phases'):
+        for ph in tracker['phases']:
+            tw = ph.get('target_weight')
+            if tw is None:
+                continue
+            try:
+                ps = date.fromisoformat(ph['start'])
+                pe = date.fromisoformat(ph['end'])
+            except (KeyError, ValueError):
+                continue
+            ax.plot([ps, pe], [tw, tw], color='#D63031', linestyle='--', linewidth=1.8,
+                    label=f"{ph.get('name', '阶段')} → {tw}kg", alpha=0.8)
+
+    # Annotate last value
+    if w_ma:
+        last_x = mdates.date2num(dates_ma[-1])
+        ax.annotate(f'{w_ma[-1]:.1f} kg', xy=(dates_ma[-1], w_ma[-1]),
+                    xytext=(15, -15), textcoords='offset points',
+                    fontsize=11, color='#0984E3', fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor='#DDD', alpha=0.9),
+                    arrowprops=dict(arrowstyle='->', color='#0984E3', lw=1.2))
+
+    ax.set_title('体重变化趋势 (7日滑动平均)', fontsize=13, fontweight='bold', color='#2D3436')
+    ax.set_ylabel('体重 (kg)')
+    ax.legend(loc='upper left', framealpha=0.8, fontsize=9)
+    ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
+
+
+def draw_bodyfat_trend(ax, weight_records):
+    """Row 2 col 1: Body fat trend."""
+    if not weight_records:
+        ax.text(0.5, 0.5, '暂无数据', transform=ax.transAxes, ha='center', va='center',
+                fontsize=14, color='gray')
+        ax.set_title('体脂率趋势 (7日滑动平均)', fontsize=12, fontweight='bold', color='#2D3436')
+        return
+
+    bf_pairs = [(r['date'], r['bodyfat']) for r in weight_records]
+    dates_bf, bf_ma = rolling_average(bf_pairs)
+
+    ax.plot(dates_bf, bf_ma, color='#00B894', linewidth=2.5, marker='s', markersize=4,
+            label='体脂率 (7日均线)')
+    ax.fill_between(dates_bf, bf_ma, alpha=0.08, color='#00B894')
+
+    if bf_ma:
+        ax.annotate(f'{bf_ma[-1]:.1f}%', xy=(dates_bf[-1], bf_ma[-1]),
+                    xytext=(15, -15), textcoords='offset points',
+                    fontsize=11, color='#00B894', fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor='#DDD', alpha=0.9),
+                    arrowprops=dict(arrowstyle='->', color='#00B894', lw=1.2))
+
+    ax.set_title('体脂率趋势 (7日滑动平均)', fontsize=12, fontweight='bold', color='#2D3436')
+    ax.set_ylabel('体脂率 (%)')
+    ax.legend(loc='upper left', framealpha=0.8, fontsize=9)
+    ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
+
+
+def draw_weekly_rate(ax, weight_records):
+    """Row 2 col 2: Weekly loss rate with safe zone."""
+    if not weight_records or len(weight_records) < 8:
+        ax.text(0.5, 0.5, '数据不足 (需≥8天)', transform=ax.transAxes, ha='center', va='center',
+                fontsize=14, color='gray')
+        ax.set_title('每周减重速度 (负值=减重)', fontsize=12, fontweight='bold', color='#2D3436')
+        return
+
+    w_pairs = [(r['date'], r['weight']) for r in weight_records]
+    dates_ma, w_ma = rolling_average(w_pairs)
+
+    weekly_dates, weekly_vals = [], []
+    for i in range(7, len(w_ma)):
+        weekly_dates.append(dates_ma[i])
+        weekly_vals.append(round(w_ma[i] - w_ma[i - 7], 2))
+
+    # Safe zone shading
+    if weekly_dates:
+        x_min = mdates.date2num(weekly_dates[0])
+        x_max = mdates.date2num(weekly_dates[-1])
+        ax.axhspan(-1.0, -0.5, xmin=0, xmax=1, alpha=0.12, color='#00B894',
+                   label='安全区间 (0.5-1.0 kg/周)')
+
+    ax.plot(weekly_dates, weekly_vals, color='#6C5CE7', linewidth=2.5, marker='D', markersize=4,
+            label='周减重 (kg/周)')
+    ax.axhline(y=0, color='gray', linewidth=0.8, linestyle=':')
+
+    ax.set_title('每周减重速度 (负值=减重)', fontsize=12, fontweight='bold', color='#2D3436')
+    ax.set_ylabel('速度 (kg/周)')
+    ax.legend(loc='upper left', framealpha=0.8, fontsize=9)
+
+
+def draw_calorie_intake(ax, calorie_daily, tdee, has_nutrition):
+    """Row 3 col 1: Stacked bar chart of daily calorie intake by meal type."""
+    if not calorie_daily:
+        ax.text(0.5, 0.5, '暂无热量数据', transform=ax.transAxes, ha='center', va='center',
+                fontsize=14, color='gray')
+        ax.set_title('每日热量摄入', fontsize=12, fontweight='bold', color='#2D3436')
+        return
+
+    dates_cal = [d['date'] for d in calorie_daily]
+    dnums = [mdates.date2num(d) for d in dates_cal]
+    bar_width = max(0.6, 0.9 * max(0.5, (dnums[-1] - dnums[0]) / max(1, len(dnums)) if len(dnums) > 1 else 1))
+
+    bottom = np.zeros(len(dates_cal))
+    for meal in MEAL_ORDER:
+        vals = [d[meal] for d in calorie_daily]
+        ax.bar(dates_cal, vals, width=bar_width, bottom=bottom,
+               color=MEAL_COLORS[meal], label=MEAL_LABELS[meal],
+               edgecolor='white', linewidth=0.3)
+        bottom += np.array(vals)
+
+    # TDEE line
+    ax.axhline(y=tdee, color='#D63031', linewidth=1.5, linestyle='--',
+               label=f'TDEE ({tdee} kcal)')
+
+    if not has_nutrition:
+        ax.text(0.5, 0.98, '(使用缺省值填充)', transform=ax.transAxes, ha='center',
+                fontsize=9, color='#999', va='top')
+
+    ax.set_title('每日热量摄入', fontsize=12, fontweight='bold', color='#2D3436')
+    ax.set_ylabel('热量 (kcal)')
+    ax.legend(loc='upper left', framealpha=0.8, fontsize=9, ncol=2)
+
+
+def draw_calorie_deficit(ax, calorie_daily, goal_deficit):
+    """Row 3 col 2: Daily calorie deficit bar chart."""
+    if not calorie_daily:
+        ax.text(0.5, 0.5, '暂无热量数据', transform=ax.transAxes, ha='center', va='center',
+                fontsize=14, color='gray')
+        ax.set_title('每日热量缺口', fontsize=12, fontweight='bold', color='#2D3436')
+        return
+
+    dates_cal = [d['date'] for d in calorie_daily]
+    deficits = [d['deficit'] for d in calorie_daily]
+    colors = ['#00B894' if v >= 0 else '#D63031' for v in deficits]
+
+    bar_width = max(0.6, 0.9 * max(0.5, (mdates.date2num(dates_cal[-1]) - mdates.date2num(dates_cal[0])) / max(1, len(dates_cal)) if len(dates_cal) > 1 else 1))
+    ax.bar(dates_cal, deficits, width=bar_width, color=colors,
+           edgecolor='white', linewidth=0.3)
+
+    # Goal deficit line
+    if goal_deficit:
+        ax.axhline(y=goal_deficit, color='#0984E3', linewidth=1.5, linestyle='--',
+                   label=f'目标缺口 ({goal_deficit} kcal)')
+
+    ax.axhline(y=0, color='gray', linewidth=0.8)
+
+    ax.set_title('每日热量缺口', fontsize=12, fontweight='bold', color='#2D3436')
+    ax.set_ylabel('缺口 (kcal)')
+    ax.legend(loc='upper left', framealpha=0.8, fontsize=9)
+
+
+# ---------------------------------------------------------------------------
+# Main figure assembly
+# ---------------------------------------------------------------------------
+
+def build_dashboard(weight_records, tracker, calorie_daily, has_nutrition, has_exercise, goal_deficit):
     tdee = tracker.get('tdee', 2200)
 
-    fig = make_subplots(
-        rows=3, cols=2,
-        specs=[
-            [{"colspan": 2}, None],
-            [{}, {}],
-            [{}, {}],
-        ],
-        subplot_titles=(
-            '体重变化趋势 (7日滑动平均)',
-            '体脂率趋势 (7日滑动平均)',
-            '每周减重速度 (负值=减重)',
-            '🔥 每日热量摄入',
-            '📉 每日热量缺口',
-        ),
-        vertical_spacing=0.13,
-        horizontal_spacing=0.10,
-    )
+    fig = plt.figure(figsize=(16, 18), facecolor='white')
+    gs = fig.add_gridspec(3, 2, height_ratios=[1, 1, 1.05], hspace=0.35, wspace=0.25,
+                          left=0.07, right=0.97, top=0.93, bottom=0.05)
 
-    # ---- Row 1, Col 1: Weight trend ----
-    if has_weight:
-        w_pairs = [(r['date'], r['weight']) for r in weight_records]
-        dates_ma, w_ma = rolling_average(w_pairs)
-        fig.add_trace(
-            go.Scatter(
-                x=dates_ma, y=w_ma, mode='lines+markers',
-                line=dict(color='#0984E3', width=3),
-                marker=dict(size=5),
-                name='体重 (7日均线)',
-                hovertemplate='%{x|%m-%d}<br>体重: %{y:.1f} kg<extra></extra>',
-            ),
-            row=1, col=1,
-        )
+    # Row 1: Weight trend (full width)
+    ax1 = fig.add_subplot(gs[0, :])
+    draw_weight_trend(ax1, weight_records, tracker)
 
-        if tracker.get('phases'):
-            for ph in tracker['phases']:
-                tw = ph.get('target_weight')
-                if tw is None:
-                    continue
-                try:
-                    ps = date.fromisoformat(ph['start'])
-                    pe = date.fromisoformat(ph['end'])
-                except (KeyError, ValueError):
-                    continue
-                fig.add_trace(
-                    go.Scatter(
-                        x=[ps, pe], y=[tw, tw],
-                        mode='lines',
-                        line=dict(color='#D63031', dash='dash', width=2),
-                        name=f"{ph.get('name', '阶段')} → {tw}kg",
-                        hovertemplate='阶段目标: %{y:.1f} kg<extra></extra>',
-                    ),
-                    row=1, col=1,
-                )
+    # Row 2: Body fat + Weekly rate
+    ax2 = fig.add_subplot(gs[1, 0])
+    draw_bodyfat_trend(ax2, weight_records)
 
-        if w_ma:
-            fig.add_annotation(
-                x=dates_ma[-1], y=w_ma[-1],
-                text=f'{w_ma[-1]:.1f} kg',
-                showarrow=True, arrowhead=1, ax=30, ay=-20,
-                font=dict(size=13, color='#0984E3'),
-                bgcolor='rgba(255,255,255,0.8)',
-                row=1, col=1,
-            )
-    else:
-        fig.add_annotation(
-            x=0.5, y=0.5, xref='x domain', yref='y domain',
-            text='暂无体重数据', showarrow=False,
-            font=dict(size=16, color='gray'),
-            row=1, col=1,
-        )
+    ax3 = fig.add_subplot(gs[1, 1])
+    draw_weekly_rate(ax3, weight_records)
 
-    # ---- Row 2, Col 1: Body fat trend ----
-    if has_weight:
-        bf_pairs = [(r['date'], r['bodyfat']) for r in weight_records]
-        dates_bf, bf_ma = rolling_average(bf_pairs)
-        fig.add_trace(
-            go.Scatter(
-                x=dates_bf, y=bf_ma, mode='lines+markers',
-                line=dict(color='#00B894', width=3),
-                marker=dict(size=5),
-                name='体脂率 (7日均线)',
-                hovertemplate='%{x|%m-%d}<br>体脂: %{y:.1f}%<extra></extra>',
-            ),
-            row=2, col=1,
-        )
-        if bf_ma:
-            fig.add_annotation(
-                x=dates_bf[-1], y=bf_ma[-1],
-                text=f'{bf_ma[-1]:.1f}%',
-                showarrow=True, arrowhead=1, ax=30, ay=-20,
-                font=dict(size=13, color='#00B894'),
-                bgcolor='rgba(255,255,255,0.8)',
-                row=2, col=1,
-            )
-    else:
-        fig.add_annotation(
-            x=0.5, y=0.5, xref='x domain', yref='y domain',
-            text='暂无体重数据', showarrow=False,
-            font=dict(size=16, color='gray'),
-            row=2, col=1,
-        )
+    # Row 3: Calorie intake + Deficit
+    ax4 = fig.add_subplot(gs[2, 0])
+    draw_calorie_intake(ax4, calorie_daily, tdee, has_nutrition)
 
-    # ---- Row 2, Col 2: Weekly loss rate ----
-    if has_weight and len(weight_records) >= 8:
-        w_pairs = [(r['date'], r['weight']) for r in weight_records]
-        dates_ma, w_ma = rolling_average(w_pairs)
+    ax5 = fig.add_subplot(gs[2, 1])
+    draw_calorie_deficit(ax5, calorie_daily, goal_deficit)
 
-        weekly_dates, weekly_vals = [], []
-        for i in range(7, len(w_ma)):
-            weekly_dates.append(dates_ma[i])
-            weekly_vals.append(round(w_ma[i] - w_ma[i - 7], 2))
+    # ---- Global styling ----
+    for ax in [ax1, ax2, ax3, ax4, ax5]:
+        ax.set_facecolor('#FAFAFA')
+        ax.grid(True, color='#E0E0E0', linewidth=0.5, alpha=0.7)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        ax.tick_params(labelsize=9)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
 
-        fig.add_trace(
-            go.Scatter(
-                x=weekly_dates, y=weekly_vals, mode='lines+markers',
-                line=dict(color='#6C5CE7', width=3),
-                marker=dict(size=5),
-                name='周减重 (kg/周)',
-                hovertemplate='%{x|%m-%d}<br>周减重: %{y:+.2f} kg<extra></extra>',
-            ),
-            row=2, col=2,
-        )
+    # Title
+    start_date = calorie_daily[0]['date'] if calorie_daily else (weight_records[0]['date'] if weight_records else date.today())
+    end_date = calorie_daily[-1]['date'] if calorie_daily else (weight_records[-1]['date'] if weight_records else date.today())
 
-        fig.add_hrect(
-            y0=-1.0, y1=-0.5, line_width=0,
-            fillcolor='rgba(0, 184, 148, 0.15)',
-            name='安全区间 (0.5-1.0 kg/周)',
-            row=2, col=2,
-        )
-        fig.add_hline(y=0, line=dict(color='gray', width=1, dash='dot'), row=2, col=2)
-    else:
-        fig.add_annotation(
-            x=0.5, y=0.5, xref='x domain', yref='y domain',
-            text='数据不足 (需≥8天)', showarrow=False,
-            font=dict(size=16, color='gray'),
-            row=2, col=2,
-        )
-
-    # ---- Row 3, Col 1: Daily calorie intake ----
-    if calorie_daily:
-        dates_cal = [d['date'] for d in calorie_daily]
-        for meal in MEAL_ORDER:
-            vals = [d[meal] for d in calorie_daily]
-            fig.add_trace(
-                go.Bar(
-                    x=dates_cal, y=vals,
-                    name=MEAL_LABELS[meal],
-                    marker_color=MEAL_COLORS[meal],
-                    hovertemplate='%{x|%m-%d}<br>' + MEAL_LABELS[meal] + ': %{y:.0f} kcal<extra></extra>',
-                ),
-                row=3, col=1,
-            )
-
-        fig.add_trace(
-            go.Scatter(
-                x=[dates_cal[0], dates_cal[-1]], y=[tdee, tdee],
-                mode='lines',
-                line=dict(color='#D63031', width=2, dash='dash'),
-                name=f'TDEE ({tdee} kcal)',
-                hovertemplate='TDEE: %{y:.0f} kcal<extra></extra>',
-            ),
-            row=3, col=1,
-        )
-
-        if not has_nutrition:
-            fig.add_annotation(
-                x=0.5, y=0.95, xref='x domain', yref='y domain',
-                text='(使用缺省值填充)', showarrow=False,
-                font=dict(size=11, color='#999'),
-                row=3, col=1,
-            )
-    else:
-        fig.add_annotation(
-            x=0.5, y=0.5, xref='x domain', yref='y domain',
-            text='暂无热量数据', showarrow=False,
-            font=dict(size=16, color='gray'),
-            row=3, col=1,
-        )
-
-    # ---- Row 3, Col 2: Daily calorie deficit ----
-    if calorie_daily:
-        dates_cal = [d['date'] for d in calorie_daily]
-        deficits = [d['deficit'] for d in calorie_daily]
-
-        colors = ['#00B894' if v >= 0 else '#D63031' for v in deficits]
-
-        fig.add_trace(
-            go.Bar(
-                x=dates_cal, y=deficits,
-                marker_color=colors,
-                name='热量缺口',
-                hovertemplate='%{x|%m-%d}<br>缺口: %{y:+.0f} kcal<extra></extra>',
-            ),
-            row=3, col=2,
-        )
-
-        if goal_deficit:
-            fig.add_trace(
-                go.Scatter(
-                    x=[dates_cal[0], dates_cal[-1]], y=[goal_deficit, goal_deficit],
-                    mode='lines',
-                    line=dict(color='#0984E3', width=2, dash='dash'),
-                    name=f'目标缺口 ({goal_deficit} kcal)',
-                    hovertemplate='目标: %{y:.0f} kcal<extra></extra>',
-                ),
-                row=3, col=2,
-            )
-
-        fig.add_hline(y=0, line=dict(color='gray', width=1), row=3, col=2)
-    else:
-        fig.add_annotation(
-            x=0.5, y=0.5, xref='x domain', yref='y domain',
-            text='暂无热量数据', showarrow=False,
-            font=dict(size=16, color='gray'),
-            row=3, col=2,
-        )
-
-    return fig
-
-
-# ---------------------------------------------------------------------------
-# Layout & output
-# ---------------------------------------------------------------------------
-
-def apply_layout(fig, start_date, end_date, tracker):
-    title_text = f'📊 健身周报 — {start_date} ~ {end_date}'
+    title_text = f'健身周报 — {start_date.isoformat()} ~ {end_date.isoformat()}'
     if tracker.get('phases'):
-        current_phases = [
-            ph for ph in tracker['phases']
-            if ph.get('target_weight') is not None
-        ]
+        current_phases = [ph for ph in tracker['phases'] if ph.get('target_weight') is not None]
         if current_phases:
             phase_names = ' | '.join(
-                f"{ph.get('name', '')}: {ph['target_weight']}kg"
-                for ph in current_phases
+                f"{ph.get('name', '')}: {ph['target_weight']}kg" for ph in current_phases
             )
-            title_text += f'<br><sub style="font-size:13px">{phase_names}</sub>'
+            title_text += f'\n{phase_names}'
 
-    fig.update_layout(
-        title=dict(text=title_text, x=0.05, font=dict(size=22, color='#2D3436')),
-        font=dict(family='Microsoft YaHei, SimHei, sans-serif', size=12, color='#2D3436'),
-        template='plotly_white',
-        hovermode='x unified',
-        showlegend=True,
-        legend=dict(
-            orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5,
-            font=dict(size=11),
-        ),
-        barmode='stack',
-        height=1400,
-        margin=dict(l=60, r=30, t=120, b=50),
-        paper_bgcolor='white',
-        plot_bgcolor='#FAFAFA',
-    )
+    fig.suptitle(title_text, fontsize=20, fontweight='bold', color='#2D3436',
+                 x=0.07, ha='left', y=0.97)
 
-    for i in range(1, 4):
-        for j in range(1, 3):
-            if i == 1 and j == 2:
-                continue
-            fig.update_xaxes(
-                row=i, col=j,
-                tickformat='%m-%d',
-                dtick='M1' if i <= 2 else None,
-                ticklabelmode='period',
-                gridcolor='#E0E0E0',
-                zeroline=False,
-            )
-            fig.update_yaxes(
-                row=i, col=j,
-                gridcolor='#E0E0E0',
-                zeroline=False,
-            )
-
-    fig.update_yaxes(title_text='体重 (kg)', row=1, col=1)
-    fig.update_yaxes(title_text='体脂率 (%)', row=2, col=1)
-    fig.update_yaxes(title_text='速度 (kg/周)', row=2, col=2)
-    fig.update_yaxes(title_text='热量 (kcal)', row=3, col=1)
-    fig.update_yaxes(title_text='缺口 (kcal)', row=3, col=2)
+    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +492,6 @@ def main():
         min_date = weight_records[0]['date']
         max_date = weight_records[-1]['date']
     else:
-        # Try nutrition or exercise dates
         nutrition = load_nutrition()
         exercise = load_exercise()
         all_d = set()
@@ -488,7 +503,6 @@ def main():
             min_date = min(all_d)
             max_date = max(all_d)
         else:
-            # Nothing at all
             min_date = date.today() - timedelta(days=6)
             max_date = date.today()
 
@@ -496,24 +510,15 @@ def main():
         weight_records, min_date, max_date, default_meals, tdee
     )
 
-    fig = make_dashboard(
+    fig = build_dashboard(
         weight_records, tracker, calorie_daily,
         has_nutrition, has_exercise, goal_deficit,
     )
-    apply_layout(fig, min_date.isoformat(), max_date.isoformat(), tracker)
 
     os.makedirs(TEMP_DIR, exist_ok=True)
-    html_path = os.path.join(TEMP_DIR, 'dashboard.html')
-    fig.write_html(html_path, include_plotlyjs='cdn', config={
-        'displayModeBar': True,
-        'displaylogo': False,
-        'modeBarButtonsToRemove': ['lasso2d', 'select2d'],
-        'toImageButtonOptions': {'format': 'png', 'filename': 'fitness_dashboard'},
-    })
-
     png_path = os.path.join(TEMP_DIR, 'dashboard.png')
-    fig.write_image(png_path, width=1600, height=1400, scale=1.5)
-
+    fig.savefig(png_path, dpi=150, facecolor='white', edgecolor='none')
+    plt.close(fig)
 
     w_pairs = [(r['date'], r['weight']) for r in weight_records] if weight_records else []
     _, w_ma = rolling_average(w_pairs) if w_pairs else ([], [])
@@ -521,7 +526,6 @@ def main():
     _, bf_ma = rolling_average(bf_pairs) if bf_pairs else ([], [])
 
     summary = {
-        'html_path': html_path,
         'png_path': png_path,
         'temp_dir': TEMP_DIR,
         'records_count': len(weight_records),
