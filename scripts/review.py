@@ -195,7 +195,7 @@ def compute_calorie_summary(tracker, days=7):
     today = date.today()
     start = today - timedelta(days=days - 1)
 
-    tdee = tracker.get('tdee', 2200)
+    ree = tracker.get('ree', 2200)
     default_meals = tracker.get('default_meals', {
         'breakfast': 450, 'lunch': 650, 'dinner': 600, 'snack': 200,
     })
@@ -231,7 +231,7 @@ def compute_calorie_summary(tracker, days=7):
             intake += day_nut['snack']
 
         burn = ex_by_date.get(ds, 0)
-        deficit = tdee + burn - intake
+        deficit = ree + burn - intake
 
         daily_intakes.append(intake)
         daily_burns.append(burn)
@@ -250,7 +250,7 @@ def compute_calorie_summary(tracker, days=7):
         'avg_deficit': avg_deficit,
         'goal_deficit': goal_deficit,
         'deficit_met_days': deficit_met,
-        'tdee': tdee,
+        'ree': ree,
     }
 
 

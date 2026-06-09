@@ -57,7 +57,7 @@
   "critical_kg": 2.0,
   "last_milestone_weight": 74.0,
   "milestones_hit": [],
-  "tdee": 2200,
+  "ree": 2200,
   "default_meals": {
     "breakfast": 450,
     "lunch": 650,
@@ -87,7 +87,7 @@
 | `critical_kg` | number | 红灯偏差阈值 (kg) |
 | `last_milestone_weight` | number | 上次触发里程碑时的体重 |
 | `milestones_hit` | array | 已达成的里程碑历史 |
-| `tdee` | number | 日均总消耗 (kcal)，初始化时访谈收集 |
+| `ree` | number | 日均静息消耗 (kcal)，初始化时访谈收集 |
 | `default_meals` | object | 三餐缺省热量值，未记餐次自动填充；零食无缺省值，没记就是 0 |
 | `goal_deficit` | number | 每日目标热量缺口 (kcal)，默认 500 |
 

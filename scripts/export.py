@@ -8,7 +8,7 @@ Output (stdout JSON):
     "每日汇总_csv": "...",
     "身体数据_csv": "...",
     "阶段信息_csv": "...",
-    "参数": { "TDEE": 2000, "目标缺口": 600 }
+    "参数": { "REE": 2000, "目标缺口": 600 }
   }
 """
 
@@ -126,7 +126,7 @@ def write_exercise_detail(exercise_rows, out_dir):
 
 def write_daily_summary(nutrition_rows, exercise_rows, tracker, today, out_dir):
     """14-day daily aggregation: intake, burn, deficit."""
-    tdee = tracker.get('tdee', 2200)
+    ree = tracker.get('ree', 2200)
     default_meals = tracker.get('default_meals', {
         'breakfast': 450, 'lunch': 650, 'dinner': 600, 'snack': 0,
     })
@@ -148,7 +148,7 @@ def write_daily_summary(nutrition_rows, exercise_rows, tracker, today, out_dir):
     with open(path, 'w', encoding='utf-8-sig', newline='') as f:
         w = csv.writer(f)
         w.writerow(['日期', '早餐(kcal)', '午餐(kcal)', '晚餐(kcal)', '零食(kcal)',
-                     '总摄入(kcal)', '运动消耗(kcal)', 'TDEE(kcal)',
+                     '总摄入(kcal)', '运动消耗(kcal)', 'REE(kcal)',
                      '纯缺口(kcal)', '脂肪校正缺口(kcal)', '有真实饮食数据'])
 
         d = start
@@ -166,11 +166,11 @@ def write_daily_summary(nutrition_rows, exercise_rows, tracker, today, out_dir):
             has_real = ds in recorded_meals
             total_intake = round(breakfast + lunch + dinner + snack)
             exercise_burn = round(ex_by_date.get(ds, 0))
-            raw_deficit = round(tdee + exercise_burn - total_intake)
+            raw_deficit = round(ree + exercise_burn - total_intake)
             fat_deficit = round(raw_deficit * 0.7)
 
             w.writerow([ds, round(breakfast), round(lunch), round(dinner), round(snack),
-                        total_intake, exercise_burn, tdee,
+                        total_intake, exercise_burn, ree,
                         raw_deficit, fat_deficit, '是' if has_real else '否'])
             d += timedelta(days=1)
     return path
@@ -263,7 +263,7 @@ def main():
         '身体数据_csv': write_body_data(weight_records, TEMP_DIR),
         '阶段信息_csv': write_phase_info(tracker, today, TEMP_DIR),
         '参数': {
-            'TDEE': tracker.get('tdee', 2200),
+            'REE': tracker.get('ree', 2200),
             '目标缺口': tracker.get('goal_deficit'),
             '默认餐次': tracker.get('default_meals', {}),
         },

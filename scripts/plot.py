@@ -196,7 +196,7 @@ def _plan_x_range(tracker, today):
     return today - timedelta(days=7), today + timedelta(days=7)
 
 
-def compute_daily_calories(min_date, max_date, default_meals, tdee):
+def compute_daily_calories(min_date, max_date, default_meals, ree):
     nutrition = load_nutrition()
     exercise = load_exercise()
 
@@ -219,14 +219,14 @@ def compute_daily_calories(min_date, max_date, default_meals, tdee):
         snack     = day_nut.get('snack', 0)
         intake    = breakfast + lunch + dinner + snack
         burn      = ex_by_date.get(ds, 0)
-        deficit   = float(tdee or 0) + float(burn or 0) - float(intake or 0)
+        deficit   = float(ree or 0) + float(burn or 0) - float(intake or 0)
         daily.append({
             'date': d,
             'breakfast': breakfast, 'lunch': lunch,
             'dinner': dinner, 'snack': snack,
             'total_intake': round(intake),
             'exercise_burn': round(burn),
-            'tdee': tdee, 'deficit': round(deficit),
+            'ree': ree, 'deficit': round(deficit),
         })
         d += timedelta(days=1)
     return daily, len(nutrition) > 0, len(exercise) > 0
@@ -471,7 +471,7 @@ def draw_weight_plan_overview(ax, weight_records, tracker, plan_x_range, today):
     ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
 
 
-def draw_calorie_intake(ax, calorie_daily, tdee, has_nutrition):
+def draw_calorie_intake(ax, calorie_daily, ree, has_nutrition):
     """Row 2 col 1: Last 14 days stacked bar."""
     if not calorie_daily:
         ax.text(0.5, 0.5, '暂无热量数据', transform=ax.transAxes, ha='center', va='center',
@@ -497,8 +497,8 @@ def draw_calorie_intake(ax, calorie_daily, tdee, has_nutrition):
     ax.set_xticklabels([d.strftime('%m-%d') for d in tk_dates], fontsize=8)
     ax.set_xlim(-0.5, len(dates_cal) - 0.5)
 
-    ax.axhline(y=tdee, color='#D63031', linewidth=1.5, linestyle='--',
-               label=f'TDEE ({tdee} kcal)')
+    ax.axhline(y=ree, color='#D63031', linewidth=1.5, linestyle='--',
+               label=f'REE ({ree} kcal)')
     if not has_nutrition:
         ax.text(0.5, 0.98, '(使用缺省值填充)', transform=ax.transAxes, ha='center',
                 fontsize=9, color='#999', va='top')
@@ -546,7 +546,7 @@ def draw_calorie_deficit(ax, calorie_daily, goal_deficit):
 
 def build_dashboard(weight_records, tracker, calorie_daily, has_nutrition, has_exercise,
                     goal_deficit, plan_x_range, today):
-    tdee = tracker.get('tdee', 2200)
+    ree = tracker.get('ree', 2200)
 
     fig = plt.figure(figsize=(16, 18), facecolor='white')
     gs = fig.add_gridspec(3, 2, height_ratios=[1.0, 0.85, 0.9],
@@ -557,7 +557,7 @@ def build_dashboard(weight_records, tracker, calorie_daily, has_nutrition, has_e
     draw_weight_recent_28d(ax1, weight_records, tracker, today)
 
     ax2 = fig.add_subplot(gs[1, 0])
-    draw_calorie_intake(ax2, calorie_daily, tdee, has_nutrition)
+    draw_calorie_intake(ax2, calorie_daily, ree, has_nutrition)
 
     ax3 = fig.add_subplot(gs[1, 1])
     draw_calorie_deficit(ax3, calorie_daily, goal_deficit)
@@ -592,7 +592,7 @@ def main():
     default_meals = tracker.get('default_meals', {
         'breakfast': 450, 'lunch': 650, 'dinner': 600, 'snack': 200,
     })
-    tdee = tracker.get('tdee', 2200)
+    ree = tracker.get('ree', 2200)
     goal_deficit = tracker.get('goal_deficit', None)
     today = date.today()
 
@@ -602,7 +602,7 @@ def main():
     cal_min = today - timedelta(days=13)
     cal_max = today
     calorie_daily, has_nutrition, has_exercise = compute_daily_calories(
-        cal_min, cal_max, default_meals, tdee
+        cal_min, cal_max, default_meals, ree
     )
 
     fig = build_dashboard(
@@ -627,7 +627,7 @@ def main():
         'records_count': len(weight_records),
         'has_nutrition_data': has_nutrition,
         'has_exercise_data': has_exercise,
-        'tdee': tdee,
+        'ree': ree,
         'goal_deficit': goal_deficit,
     }
     if weight_records:
