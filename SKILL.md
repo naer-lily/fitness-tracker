@@ -92,9 +92,9 @@ agent_created: true
 每次会话开始时，调用 `scripts/review.py`。若返回 `review_due: true`，主动告知用户"该做周回顾了"，询问是否现在做。
 
 ### 回顾流程
-1. **绘图**：调用 `scripts/plot.py`，在临时目录下生成 `dashboard.png`，stdout 输出 JSON 含文件路径
-2. **展示图表**：向用户展示 PNG 仪表盘图片（内含 5 个子图：体重趋势、体脂率、周减重速度、热量摄入堆叠柱状图、热量缺口柱状图）
-3. **结构化分析**：基于仪表盘和 `review.py` 的输出，组织以下要点（用自己的语言，不套模板）：
+1. **导出数据**：调用 `scripts/export.py`，stdout 输出 JSON 包含 5 个 CSV 文件路径（饮食明细、运动明细、每日汇总、身体数据、阶段信息）
+2. **解读数据**：AI 读取上述 CSV，用自己的语言组织分析要点，重点关注趋势方向和热量缺口。如需可视化，AI 可自行根据 CSV 数据绘图
+3. **结构化分析**：基于导出的数据和 `review.py` 的输出，组织以下要点：
 
 #### 分析要点
 - **趋势方向**：7 日均线是向下/走平/向上？对比上次回顾的变化
@@ -118,7 +118,7 @@ agent_created: true
 ### 回顾原则
 - 每次回顾先指出进步（哪怕小），再谈需要关注的地方
 - 聚焦当前阶段，不把后面阶段的压力提前
-- 用图表说话：让趋势图承载数据，口头评论只做解读
+- 用数据说话：让 CSV 数据承载事实，口头评论只做解读
 
 ## 5. 执行支持（核心）
 
@@ -172,7 +172,8 @@ agent_created: true
 | `scripts/record.py` | `<体重kg> <体脂率%> [肌肉量kg]` | 追加 CSV，更新 tracker 的 last_record |
 | `scripts/nutrition.py` | `add <餐次> <热量> [--protein N] [--carbs N] [--fat N] [--note ...]`<br>`summary [--days N]`<br>`defaults [--set key=val]` | 追加 CSV；查看/修改缺省值写入 tracker |
 | `scripts/exercise.py` | `add <类型> <消耗kcal> [--duration N] [--note ...]`<br>`summary [--days N]` | 追加 CSV |
-| `scripts/plot.py` | 无参数 | 生成 `dashboard.png`，stdout 输出 JSON |
+| `scripts/plot.py` | 无参数 | 生成 `dashboard.png`（已保留，不再作为主要输出） |
+| `scripts/export.py` | 无参数 | 导出 5 个 CSV（饮食/运动明细、每日汇总、身体数据、阶段信息）到临时目录，stdout 输出 JSON |
 | `scripts/review.py` | 无参数 或 `--mark-done` | 无文件修改（除非带 --mark-done）；输出 JSON 到 stdout |
 
 所有脚本自动定位 `data/` 目录（相对于 SKILL 根目录）。不需要在调用时指定路径。
@@ -186,7 +187,8 @@ fitness-tracker/
 │   ├── record.py                   # 体重/体脂记录
 │   ├── nutrition.py                # 饮食记录
 │   ├── exercise.py                 # 运动记录
-│   ├── plot.py                     # 生成交互式仪表盘 HTML → 临时目录
+│   ├── plot.py                     # 生成仪表盘 PNG（已保留，不再作为主要输出）
+│   ├── export.py                   # 导出结构化 CSV 数据
 │   └── review.py                   # 回顾检查
 ├── references/
 │   ├── profile-schema.md           # 数据格式 schema
