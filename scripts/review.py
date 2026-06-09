@@ -1,376 +1,351 @@
 #!/usr/bin/env python3
-"""Check review status, deviation level, and milestone progress.
+"""Periodic review — multi-axis analysis for the AI to present to the user.
 
-Outputs a JSON object to stdout for the AI to consume.
-Does NOT modify tracker.json (AI decides when to update last_review).
+Outputs a comprehensive JSON object covering:
+  - Review scheduling
+  - Weight trend + phase deviation
+  - Protein adequacy (crossed with LBM trend)
+  - Metabolic adaptation risk
+  - Diet break scheduling
+  - Day-type compliance
+  - Milestone detection
 
 Usage:
     python3 review.py              # Report status only
-    python3 review.py --mark-done  # Report + update last_review in tracker.json
+    python3 review.py --mark-done  # Report + update last_review_date
 """
 
 import os
 import sys
 import json
-import csv
 from datetime import date, timedelta
 from collections import defaultdict
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-SKILL_ROOT = os.path.dirname(SCRIPT_DIR)
-DATA_DIR = os.path.join(SKILL_ROOT, 'data')
-RECORDS_PATH = os.path.join(DATA_DIR, 'records.csv')
-TRACKER_PATH = os.path.join(DATA_DIR, 'tracker.json')
+sys.path.insert(0, SCRIPT_DIR)
+import common
 
 
-def load_records(limit=None):
-    if not os.path.exists(RECORDS_PATH):
-        return []
-    records = []
-    with open(RECORDS_PATH, 'r', encoding='utf-8') as f:
-        reader = csv.reader(f)
-        next(reader, None)
-        for row in reader:
-            if len(row) < 3:
-                continue
-            d = date.fromisoformat(row[0].strip())
-            w = float(row[1])
-            bf = float(row[2])
-            m = float(row[3]) if len(row) > 3 and row[3].strip() else None
-            lbm_raw = row[4].strip() if len(row) > 4 else ''
-            lbm = float(lbm_raw) if lbm_raw else w * (1 - bf / 100)
-            records.append({'date': d, 'weight': w, 'bodyfat': bf, 'muscle': m, 'lbm': lbm})
-    records.sort(key=lambda r: r['date'])
-    if limit:
-        records = records[-limit:]
-    return records
-
-
-def load_tracker():
-    if not os.path.exists(TRACKER_PATH):
-        return None
-    with open(TRACKER_PATH, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-
-def save_tracker(tracker):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(TRACKER_PATH, 'w', encoding='utf-8') as f:
-        json.dump(tracker, f, ensure_ascii=False, indent=2)
-
-
-def compute_7day_avg(records):
-    if not records:
-        return None
-    window = min(7, len(records))
-    recent = records[-window:]
-    return sum(r['weight'] for r in recent) / len(recent)
-
-
-def get_current_phase(tracker, today):
-    if not tracker or not tracker.get('phases'):
-        return None
-    for ph in tracker['phases']:
-        try:
-            ps = date.fromisoformat(ph['start'])
-            pe = date.fromisoformat(ph['end'])
-        except (KeyError, ValueError):
-            continue
-        if ps <= today <= pe:
-            return ph
-    return None
-
-
-def compute_expected_weight(phase, tracker, today):
-    if not phase or phase.get('target_weight') is None:
-        return None
-    try:
-        ps = date.fromisoformat(phase['start'])
-        pe = date.fromisoformat(phase['end'])
-        target = phase['target_weight']
-    except (KeyError, ValueError):
-        return None
-
-    if today < ps:
-        return None
-    if today >= pe:
-        return target
-
-    start_w = phase.get('start_weight')
-    if start_w is None:
-        return target
-
-    total_days = (pe - ps).days
-    elapsed = (today - ps).days
-    if total_days <= 0:
-        return target
-
-    progress = max(0.0, min(1.0, elapsed / total_days))
-    return start_w + (target - start_w) * progress
-
-
-def compute_deviation(current_weight, expected_weight, tracker):
-    if current_weight is None or expected_weight is None:
-        return {'level': 'unknown', 'diff_kg': None, 'message': '数据不足，无法评估'}
-
-    diff = round(current_weight - expected_weight, 2)
-    warning = tracker.get('warning_kg', 1.0) if tracker else 1.0
-    critical = tracker.get('critical_kg', 2.0) if tracker else 2.0
-
-    if diff <= 0.3:
-        return {'level': 'green', 'diff_kg': diff,
-                'message': '进度正常或超前。'}
-    elif diff <= warning:
-        return {'level': 'yellow', 'diff_kg': diff,
-                'message': f'轻微偏离目标 {diff}kg，需关注。'}
-    else:
-        return {'level': 'red', 'diff_kg': diff,
-                'message': f'显著偏离目标 {diff}kg，建议深入回顾并考虑调整。'}
-
-
-def check_milestone(current_weight, tracker):
-    if not tracker or current_weight is None:
-        return None
-    interval = tracker.get('milestone_interval_kg', 2.0)
-    last = tracker.get('last_milestone_weight')
-
-    if last is None:
-        return None
-
-    next_target = last - interval
-    if current_weight <= next_target:
-        milestone = {
-            'weight': round(current_weight, 1),
-            'from': round(last, 1),
-            'interval_kg': interval,
-            'date': date.today().isoformat()
-        }
-        tracker['last_milestone_weight'] = current_weight
-        if 'milestones_hit' not in tracker:
-            tracker['milestones_hit'] = []
-        tracker['milestones_hit'].append(milestone)
-        save_tracker(tracker)
-        return milestone
-    return None
-
-
-def load_nutrition():
-    NUTRITION_PATH = os.path.join(DATA_DIR, 'nutrition_log.csv')
-    if not os.path.exists(NUTRITION_PATH):
-        return []
-    records = []
-    with open(NUTRITION_PATH, 'r', encoding='utf-8') as f:
-        reader = csv.reader(f)
-        next(reader, None)
-        for row in reader:
-            if len(row) < 3:
-                continue
-            records.append({
-                'date': row[0].strip(),
-                'meal': row[1].strip(),
-                'calories': float(row[2]),
-            })
-    return records
-
-
-def load_exercise():
-    EXERCISE_PATH = os.path.join(DATA_DIR, 'exercise_log.csv')
-    if not os.path.exists(EXERCISE_PATH):
-        return []
-    records = []
-    with open(EXERCISE_PATH, 'r', encoding='utf-8') as f:
-        reader = csv.reader(f)
-        next(reader, None)
-        for row in reader:
-            if len(row) < 3:
-                continue
-            records.append({
-                'date': row[0].strip(),
-                'calories': float(row[3]) if len(row) > 3 and row[3].strip() else 0,
-            })
-    return records
-
-
-def compute_calorie_summary(tracker, days=7):
+def compute_protein_adequacy(tracker, days=14):
+    """Analyze protein intake vs targets, crossed with LBM trend."""
     today = date.today()
     start = today - timedelta(days=days - 1)
+    records = common.load_nutrition()
+    weight_records = common.load_records()
+    weight = common.get_current_weight(tracker) or 70
 
-    ree = tracker.get('ree', 2200)
-    default_meals = tracker.get('default_meals', {
-        'breakfast': 450, 'lunch': 650, 'dinner': 600, 'snack': 200,
-    })
-    goal_deficit = tracker.get('goal_deficit', 500)
+    target_g_per_kg = tracker['protein']['target_g_per_kg']
+    min_g_per_kg = tracker['protein']['min_g_per_kg']
+    target_g = round(weight * target_g_per_kg)
+    min_g = round(weight * min_g_per_kg)
 
-    nutrition = load_nutrition()
-    exercise = load_exercise()
+    daily_pro = defaultdict(float)
+    for r in records:
+        d = r['date']
+        if start.isoformat() <= d <= today.isoformat():
+            daily_pro[d] += r['protein']
+
+    pro_vals = []
+    for i in range(days):
+        d = (start + timedelta(days=i))
+        ds = d.isoformat()
+        pro_vals.append(daily_pro.get(ds, 0))
+
+    n = max(1, days)
+    avg_g = round(sum(pro_vals) / n, 1)
+    avg_g_per_kg = round(avg_g / weight, 2)
+
+    met_days = sum(1 for p in pro_vals if p >= target_g * 0.85)
+    below_days = sum(1 for p in pro_vals if p < min_g)
+
+    # Consecutive below
+    consecutive_below = 0
+    for i in range(days - 1, -1, -1):
+        d = (today - timedelta(days=i)).isoformat()
+        if daily_pro.get(d, 0) < min_g:
+            consecutive_below += 1
+        else:
+            break
+
+    # LBM trend
+    lbm_trend = _compute_lbm_trend(weight_records, days=14)
+    lbm_protein_risk = False
+    if lbm_trend and lbm_trend < -0.3 and avg_g_per_kg < min_g_per_kg:
+        lbm_protein_risk = True
+
+    return {
+        'days': days,
+        'avg_daily_g': avg_g,
+        'avg_g_per_kg': avg_g_per_kg,
+        'target_g_per_kg': target_g_per_kg,
+        'target_daily_g': target_g,
+        'min_daily_g': min_g,
+        'met_target_days': met_days,
+        'total_days_with_data': days,
+        'consecutive_below_min': consecutive_below,
+        'lbm_trend_kg': lbm_trend,
+        'lbm_protein_risk': lbm_protein_risk,
+        'warning': consecutive_below >= tracker['protein']['warning_consecutive_days'] or lbm_protein_risk,
+    }
+
+
+def compute_metabolic_risk(tracker, days=14):
+    """Detect patterns that risk metabolic adaptation."""
+    today = date.today()
+    start = today - timedelta(days=days - 1)
+    nutrition = common.load_nutrition()
+    exercise = common.load_exercise()
+    ree = tracker['energy']['ree']
+    defaults_meals = tracker['defaults']['meals']
+    aggressive = tracker['deficit']['aggressive']
+    max_consecutive = tracker['deficit']['max_consecutive_aggressive_days']
+    max_sustained = tracker['deficit']['moderate']
 
     nut_by_date = defaultdict(lambda: defaultdict(float))
+    nut_dates = set()
     for r in nutrition:
         nut_by_date[r['date']][r['meal']] += r['calories']
+        nut_dates.add(r['date'])
 
     ex_by_date = defaultdict(float)
     for r in exercise:
         ex_by_date[r['date']] += r['calories']
 
-    daily_intakes = []
-    daily_burns = []
-    daily_deficits = []
-    deficit_met = 0
+    consecutive_aggressive = 0
+    consecutive_large_deficit = 0
+    max_consecutive_aggressive_seen = 0
+    max_consecutive_large_seen = 0
+    training_deficit_overlap = 0
 
     for i in range(days):
-        ds = (start + timedelta(days=i)).isoformat()
-        day_nut = nut_by_date.get(ds, {})
+        d = (start + timedelta(days=i))
+        ds = d.isoformat()
 
+        day_nut = nut_by_date.get(ds, {})
+        day_logged = set()
         intake = 0
+        for r in nutrition:
+            if r['date'] == ds:
+                day_logged.add(r['meal'])
+                intake += r['calories']
+
         for meal in ['breakfast', 'lunch', 'dinner']:
-            if meal in day_nut:
-                intake += day_nut[meal]
-            else:
-                intake += default_meals.get(meal, 0)
-        if 'snack' in day_nut:
-            intake += day_nut['snack']
+            if meal not in day_logged:
+                intake += defaults_meals.get(meal, 0)
 
         burn = ex_by_date.get(ds, 0)
         deficit = ree + burn - intake
 
-        daily_intakes.append(intake)
-        daily_burns.append(burn)
-        daily_deficits.append(deficit)
-        if deficit >= goal_deficit:
-            deficit_met += 1
+        if deficit > aggressive:
+            consecutive_aggressive += 1
+            max_consecutive_aggressive_seen = max(max_consecutive_aggressive_seen, consecutive_aggressive)
+        else:
+            consecutive_aggressive = 0
 
-    avg_intake = round(sum(daily_intakes) / days) if days > 0 else 0
-    avg_burn = round(sum(daily_burns) / days) if days > 0 else 0
-    avg_deficit = round(sum(daily_deficits) / days) if days > 0 else 0
+        if deficit > max_sustained:
+            consecutive_large_deficit += 1
+            max_consecutive_large_seen = max(max_consecutive_large_seen, consecutive_large_deficit)
+        else:
+            consecutive_large_deficit = 0
+
+        # Heavy training + large deficit overlap
+        dt, _ = common.resolve_day_type(tracker, d)
+        if dt == 'training' and deficit > tracker['deficit']['mild'] + 200:
+            training_deficit_overlap += 1
+
+    risk_level = 'low'
+    if max_consecutive_aggressive_seen >= max_consecutive:
+        risk_level = 'high'
+    elif max_consecutive_large_seen >= max_consecutive + 2:
+        risk_level = 'moderate'
 
     return {
         'days': days,
-        'avg_daily_intake': avg_intake,
-        'avg_daily_exercise_burn': avg_burn,
-        'avg_deficit': avg_deficit,
-        'goal_deficit': goal_deficit,
-        'deficit_met_days': deficit_met,
-        'ree': ree,
+        'max_consecutive_aggressive_days': max_consecutive_aggressive_seen,
+        'max_consecutive_large_deficit_days': max_consecutive_large_seen,
+        'aggressive_threshold_kcal': aggressive,
+        'large_deficit_threshold_kcal': max_sustained,
+        'training_deficit_overlap_days': training_deficit_overlap,
+        'risk_level': risk_level,
     }
 
 
-def compute_exercise_summary(days=7):
+def compute_day_type_compliance(tracker, days=14):
+    """Check whether nutrition matched day-type expectations."""
     today = date.today()
     start = today - timedelta(days=days - 1)
+    nutrition = common.load_nutrition()
+    exercise = common.load_exercise()
+    ree = tracker['energy']['ree']
+    defaults_meals = tracker['defaults']['meals']
+    weight = common.get_current_weight(tracker) or 70
 
-    exercise = load_exercise()
-    by_date = defaultdict(list)
+    nut_by_date = defaultdict(lambda: {'intake': 0, 'protein': 0, 'logged': set()})
+    for r in nutrition:
+        if start.isoformat() <= r['date'] <= today.isoformat():
+            nut_by_date[r['date']]['intake'] += r['calories']
+            nut_by_date[r['date']]['protein'] += r['protein']
+            nut_by_date[r['date']]['logged'].add(r['meal'])
+
+    ex_by_date = defaultdict(float)
     for r in exercise:
-        by_date[r['date']].append(r)
+        if start.isoformat() <= r['date'] <= today.isoformat():
+            ex_by_date[r['date']] += r['calories']
 
-    total_cal = 0
-    days_with_exercise = 0
+    training_days_pro = []
+    training_days_def = []
+    rest_days_cal = []
 
     for i in range(days):
-        ds = (start + timedelta(days=i)).isoformat()
-        entries = by_date.get(ds, [])
-        if entries:
-            days_with_exercise += 1
-        total_cal += sum(e['calories'] for e in entries)
+        d = (start + timedelta(days=i))
+        ds = d.isoformat()
+        dt, _ = common.resolve_day_type(tracker, d)
+        dt_config = common.get_day_type_config(tracker, dt)
 
-    avg_per_session = round(total_cal / max(1, sum(len(by_date[d]) for d in by_date)), 1) if exercise else 0
+        nd = nut_by_date.get(ds, {'intake': 0, 'protein': 0, 'logged': set()})
+        intake = nd['intake']
+        for meal in ['breakfast', 'lunch', 'dinner']:
+            if meal not in nd['logged']:
+                intake += defaults_meals.get(meal, 0)
+
+        burn = ex_by_date.get(ds, 0)
+        deficit = ree + burn - intake
+
+        if dt == 'training':
+            training_days_pro.append(nd['protein'])
+            training_days_def.append(deficit)
+        elif dt == 'rest':
+            rest_days_cal.append(intake)
 
     return {
         'days': days,
-        'days_with_exercise': days_with_exercise,
-        'total_calories': round(total_cal),
-        'avg_per_session': avg_per_session,
+        'training_days_avg_protein_g': round(sum(training_days_pro) / max(1, len(training_days_pro)), 1) if training_days_pro else 0,
+        'training_days_avg_deficit_kcal': round(sum(training_days_def) / max(1, len(training_days_def))) if training_days_def else 0,
+        'rest_days_avg_intake_kcal': round(sum(rest_days_cal) / max(1, len(rest_days_cal))) if rest_days_cal else 0,
+        'training_days_count': len(training_days_pro),
+        'rest_days_count': len(rest_days_cal),
     }
+
+
+def _compute_lbm_trend(weight_records, days=14):
+    """Compute LBM trend over recent days."""
+    if len(weight_records) < 7:
+        return None
+    recent = weight_records[-days:]
+    lbm_vals = [r['lbm'] for r in recent if r['lbm'] is not None]
+    if len(lbm_vals) < 7:
+        return None
+    first = lbm_vals[:len(lbm_vals) // 2]
+    second = lbm_vals[len(lbm_vals) // 2:]
+    return round(sum(second) / len(second) - sum(first) / len(first), 2)
 
 
 def main():
     today = date.today()
     mark_done = '--mark-done' in sys.argv
 
-    tracker = load_tracker()
-    records = load_records(limit=21)
-    current_weight = compute_7day_avg(records)
+    tracker = common.load_tracker()
+    records = common.load_records(limit=28)
+    current_weight = common.compute_7day_avg(records)
 
     # 1. Review due?
     review_due = False
     days_since_review = None
-    if tracker:
-        lr_str = tracker.get('last_review')
-        if lr_str:
-            try:
-                last_review = date.fromisoformat(lr_str[:10])
-                cadence = tracker.get('review_cadence_days', 7)
-                days_since_review = (today - last_review).days
-                review_due = days_since_review >= cadence
-            except (ValueError, TypeError):
-                pass
+    lr_str = tracker['review'].get('last_review_date') or tracker.get('last_review')
+    if lr_str:
+        try:
+            last_review = date.fromisoformat(lr_str[:10])
+            cadence = tracker['review']['cadence_days']
+            days_since_review = (today - last_review).days
+            review_due = days_since_review >= cadence
+        except (ValueError, TypeError):
+            pass
+    else:
+        if records:
+            review_due = True
+
+    # 2. Phase + deviation
+    phase = common.get_phase_info(tracker, today)
+    deviation = None
+    if phase and phase.get('expected_weight_kg') and current_weight:
+        diff = round(current_weight - phase['expected_weight_kg'], 2)
+        warning = tracker['review']['warning_kg']
+        critical = tracker['review']['critical_kg']
+        if diff <= warning:
+            level = 'green'
+        elif diff <= critical:
+            level = 'yellow'
         else:
-            # No review ever done, but data exists
-            if records:
-                review_due = True
+            level = 'red'
+        deviation = {
+            'level': level,
+            'diff_kg': diff,
+            'current_7day_avg_kg': current_weight,
+            'expected_kg': phase['expected_weight_kg'],
+            'warning_kg': warning,
+            'critical_kg': critical,
+        }
 
-    # 2. Phase & expected weight
-    phase = get_current_phase(tracker, today)
-    expected_weight = compute_expected_weight(phase, tracker, today)
-
-    # 3. Deviation
-    deviation = compute_deviation(current_weight, expected_weight, tracker)
+    # 3. Trend
+    trend = common.compute_trend(records)
 
     # 4. Milestone
-    milestone = check_milestone(current_weight, tracker)
+    milestone = None
+    interval = tracker['milestones']['interval_kg']
+    last_ms = tracker['milestones']['last_weight_kg']
+    if last_ms is not None and current_weight is not None and current_weight <= last_ms - interval:
+        milestone = {
+            'weight': round(current_weight, 1),
+            'from': round(last_ms, 1),
+            'interval_kg': interval,
+            'date': today.isoformat(),
+        }
+        tracker['milestones']['last_weight_kg'] = current_weight
+        tracker['milestones']['hit'].append(milestone)
+        common.save_tracker(tracker)
 
     # 5. Days since last record
     days_since_record = None
-    if tracker and tracker.get('last_record'):
+    lrd = tracker['review'].get('last_record_date') or tracker.get('last_record')
+    if lrd:
         try:
-            lr = date.fromisoformat(tracker['last_record'][:10])
-            days_since_record = (today - lr).days
+            days_since_record = (today - date.fromisoformat(lrd[:10])).days
         except (ValueError, TypeError):
             pass
 
-    # 6. Trend direction (short-term)
-    trend = None
-    if len(records) >= 14:
-        first_half = [r['weight'] for r in records[-14:-7]]
-        second_half = [r['weight'] for r in records[-7:]]
-        if first_half and second_half:
-            avg1 = sum(first_half) / len(first_half)
-            avg2 = sum(second_half) / len(second_half)
-            trend = round(avg2 - avg1, 2)
-
-    # 7. Phase progress
-    phase_progress = None
-    if phase and phase.get('start_weight') and phase.get('target_weight') is not None:
-        total_change = phase['target_weight'] - phase['start_weight']
-        if total_change != 0 and current_weight is not None:
-            current_change = current_weight - phase['start_weight']
-            phase_progress = round(min(100, max(0, abs(current_change / total_change) * 100)), 1)
-            if total_change < 0:
-                phase_progress = -phase_progress  # negative means weight loss
+    # 6. New dimensions
+    protein_adequacy = compute_protein_adequacy(tracker)
+    metabolic_risk = compute_metabolic_risk(tracker)
+    day_type_compliance = compute_day_type_compliance(tracker)
+    diet_break = common.get_diet_break_status(tracker)
 
     result = {
         'date': today.isoformat(),
         'review_due': review_due,
         'days_since_review': days_since_review,
         'days_since_record': days_since_record,
+
         'current_weight_7day_avg': round(current_weight, 2) if current_weight else None,
         'current_phase': phase['name'] if phase else None,
-        'expected_weight': round(expected_weight, 2) if expected_weight else None,
         'deviation': deviation,
-        'trend_14day': trend,
-        'phase_progress_pct': phase_progress,
+        'trend_14day_kg': trend,
+
+        'protein_adequacy': protein_adequacy,
+        'metabolic_risk': metabolic_risk,
+        'diet_break': diet_break,
+        'day_type_compliance': day_type_compliance,
+
+        'phase_progress': phase,
         'milestone': milestone,
         'records_count': len(records),
-        'records_total': len(load_records()),
-        'calorie_summary': compute_calorie_summary(tracker),
-        'exercise_summary': compute_exercise_summary(),
+        'records_total': len(common.load_records()),
     }
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
-    if mark_done and tracker and review_due:
-        tracker['last_review'] = today.isoformat() + 'T00:00:00'
-        save_tracker(tracker)
+    if mark_done and review_due:
+        tracker['review']['last_review_date'] = today.isoformat() + 'T00:00:00'
+        common.save_tracker(tracker)
 
 
 if __name__ == '__main__':

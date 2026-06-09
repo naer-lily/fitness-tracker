@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Record fitness data to CSV and update tracker metadata."""
+"""Record body measurements — with embedded trend feedback.
+
+Usage:
+    python3 record.py <weight_kg> <body_fat_pct> [muscle_kg]
+
+stdout JSON includes trend + milestone detection so the AI has immediate context.
+"""
 
 import sys
 import os
@@ -10,7 +16,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SKILL_ROOT = os.path.dirname(SCRIPT_DIR)
 DATA_DIR = os.path.join(SKILL_ROOT, 'data')
 RECORDS_PATH = os.path.join(DATA_DIR, 'records.csv')
-TRACKER_PATH = os.path.join(DATA_DIR, 'tracker.json')
+
+sys.path.insert(0, SCRIPT_DIR)
+import common
 
 
 def main():
@@ -25,34 +33,81 @@ def main():
     body_fat = float(sys.argv[2])
     muscle = sys.argv[3] if len(sys.argv) > 3 else ''
 
-    lean_body_mass = weight * (1 - body_fat / 100)
-    today = date.today().isoformat()
+    lean_body_mass = round(weight * (1 - body_fat / 100), 2)
+    today_str = date.today().isoformat()
 
     os.makedirs(DATA_DIR, exist_ok=True)
-
     write_header = not os.path.exists(RECORDS_PATH)
 
     with open(RECORDS_PATH, 'a', encoding='utf-8') as f:
         if write_header:
             f.write("日期,体重kg,体脂率%,肌肉量kg,去脂体重kg\n")
-        f.write(f"{today},{weight},{body_fat},{muscle},{lean_body_mass:.2f}\n")
+        f.write(f"{today_str},{weight},{body_fat},{muscle},{lean_body_mass}\n")
 
-    print(f"Recorded: {today} | {weight}kg | {body_fat}% | LBM: {lean_body_mass:.2f}kg")
+    # Update tracker
+    tracker = common.load_tracker()
+    tracker['review']['last_record_date'] = today_str
+    tracker['user']['current_weight_kg'] = weight
+    tracker['user']['current_bodyfat_pct'] = body_fat
+    tracker['user']['lean_body_mass_kg'] = lean_body_mass
+    common.save_tracker(tracker)
 
-    update_tracker(today)
+    # Build trend feedback
+    records = common.load_records()
+    trend_7d = common.compute_7day_avg(records)
+    trend_diff = common.compute_trend(records)
+    trend_dir = 'stable'
+    if trend_diff is not None:
+        if trend_diff < -0.1:
+            trend_dir = 'down'
+        elif trend_diff > 0.1:
+            trend_dir = 'up'
 
+    # Milestone check
+    milestone = None
+    interval = tracker['milestones']['interval_kg']
+    last_milestone = tracker['milestones']['last_weight_kg']
+    if last_milestone is not None:
+        next_target = last_milestone - interval
+        if trend_7d is not None and trend_7d <= next_target:
+            milestone = {
+                'weight': round(trend_7d, 1),
+                'from': round(last_milestone, 1),
+                'interval_kg': interval,
+                'date': today_str,
+            }
+            tracker['milestones']['last_weight_kg'] = trend_7d
+            tracker['milestones']['hit'].append(milestone)
+            common.save_tracker(tracker)
 
-def update_tracker(today_str):
-    if not os.path.exists(TRACKER_PATH):
-        return
+    # Alerts
+    alerts = []
+    if weight - (trend_7d or weight) > 1.0:
+        alerts.append({
+            'priority': 3, 'level': 'info', 'metric': 'weight_spike',
+            'message': f'单日体重比 7 日均线高 {round(weight - trend_7d, 1)}kg，可能是水分/钠摄入/排泄节律',
+        })
 
-    with open(TRACKER_PATH, 'r', encoding='utf-8') as f:
-        tracker = json.load(f)
+    result = {
+        'ok': True,
+        'record': {
+            'date': today_str,
+            'weight_kg': weight,
+            'bodyfat_pct': body_fat,
+            'muscle_kg': muscle if muscle else None,
+            'lean_body_mass_kg': lean_body_mass,
+            'fat_mass_kg': round(weight - lean_body_mass, 2),
+        },
+        'trend': {
+            'trend_7d_weight_kg': trend_7d,
+            'trend_direction': trend_dir,
+            'trend_14day_diff_kg': trend_diff,
+        },
+        'milestone': milestone,
+        'alerts': alerts,
+    }
 
-    tracker['last_record'] = today_str
-
-    with open(TRACKER_PATH, 'w', encoding='utf-8') as f:
-        json.dump(tracker, f, ensure_ascii=False, indent=2)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == '__main__':
